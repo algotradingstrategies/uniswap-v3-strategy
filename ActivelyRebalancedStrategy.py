@@ -7,10 +7,17 @@ import copy
 class ActivelyRebalancedStrategy:  
     
     
-    def __init__(self, base_order_width, limit_order_width_small, limit_order_width_normal, limit_order_width_large, alpha):    
+    def __init__(self, 
+                 base_order_width, 
+                 base_order_width_large, 
+                 limit_order_width, 
+                 limit_order_width_large, 
+                 alpha, 
+                 alpha_large):    
     
-        self.base_order_width, self.limit_order_width_small, self.limit_order_width_normal, self.limit_order_width_large, self.alpha = \
-            base_order_width, limit_order_width_small, limit_order_width_normal, limit_order_width_large, alpha                        
+        self.base_order_width, self.base_order_width_large = base_order_width, base_order_width_large
+        self.limit_order_width, self.limit_order_width_large = limit_order_width, limit_order_width_large
+        self.alpha, self.alpha_large = alpha, alpha_large     
         self.signals = pd.read_csv("signals.csv")
         self.signals['date'] = pd.to_datetime(self.signals['date'], utc=True) + pd.DateOffset(hours=1)
         self.lastCheck = None
@@ -24,7 +31,13 @@ class ActivelyRebalancedStrategy:
         LEFT_RANGE_HIGH     = current_strat_obs.price > current_strat_obs.strategy_info['reset_range_upper']        
         SignalChanged = False
         if IsNewHour :            
-            latestSig = self.signals.iloc[self.signals['date'].searchsorted(current_strat_obs.time)]['signal']
+            #latestSig = self.signals.iloc[self.signals['date'].searchsorted(current_strat_obs.time)]['signal']
+            try :
+                latestSig = self.signals.iloc[self.signals['date'].searchsorted(current_strat_obs.time)]['signal']
+            except:
+                print("  signal not found for %s, default to sig=0"%current_strat_obs.time)
+                latestSig = 0
+            
             SignalChanged = self.lastSignal != latestSig
             self.lastSignal = latestSig
             self.lastCheck = current_strat_obs.time            
@@ -50,8 +63,7 @@ class ActivelyRebalancedStrategy:
         TICK_B            = int(round(TICK_B_PRE/current_strat_obs.tickSpacing)*current_strat_obs.tickSpacing)
         if TICK_A==TICK_B: TICK_B=TICK_A+1
         return TICK_A, TICK_B
-    
-    
+          
     def set_liquidity_ranges(self,current_strat_obs, latestSig = 0):
                 
         is_init = False
@@ -65,17 +77,36 @@ class ActivelyRebalancedStrategy:
         # Set reset range
         ###########################################################
         strategy_info_here['reset_range_mid'] = current_strat_obs.price
-        strategy_info_here['reset_range_lower']     = (1 - self.alpha) * strategy_info_here['reset_range_mid']
-        strategy_info_here['reset_range_upper']     = (1 + self.alpha) * strategy_info_here['reset_range_mid']
+        
+        if latestSig < 0 :
+            # we want to accumulate token_0, and reduce token_1
+            strategy_info_here['reset_range_lower']     = 1 / (1 + self.alpha) * strategy_info_here['reset_range_mid']
+            strategy_info_here['reset_range_upper']     = (1 + self.alpha_large) * strategy_info_here['reset_range_mid']
+        elif latestSig > 0 :
+            # we want to reduce token_0, an accumulate token_1
+            strategy_info_here['reset_range_lower']     = 1 / (1 + self.alpha_large) * strategy_info_here['reset_range_mid']
+            strategy_info_here['reset_range_upper']     = (1 + self.alpha) * strategy_info_here['reset_range_mid']
+        else : # latestSig == 0
+            strategy_info_here['reset_range_lower']     = 1 / (1 + self.alpha) * strategy_info_here['reset_range_mid']
+            strategy_info_here['reset_range_upper']     = (1 + self.alpha) * strategy_info_here['reset_range_mid']
         
         save_ranges                = []
         
         ########################################################### 
         # ORDER 1: Base order
         ###########################################################
-        
-        order1_range_lower = (1 - self.base_order_width) * current_strat_obs.price
-        order1_range_upper = (1 + self.base_order_width) * current_strat_obs.price
+                
+        if latestSig < 0 :
+            # we want to accumulate token_0, and reduce token_1
+            order1_range_lower = 1 / (1 + self.base_order_width) * current_strat_obs.price
+            order1_range_upper = (1 + self.base_order_width_large) * current_strat_obs.price
+        elif latestSig > 0 :
+            # we want to reduce token_0, an accumulate token_1
+            order1_range_lower = 1 / (1 + self.base_order_width_large) * current_strat_obs.price
+            order1_range_upper = (1 + self.base_order_width) * current_strat_obs.price
+        else : # latestSig == 0
+            order1_range_lower = 1/ (1 + self.base_order_width) * current_strat_obs.price
+            order1_range_upper = (1 + self.base_order_width) * current_strat_obs.price
         
         total_token_0_amount = current_strat_obs.liquidity_in_0
         total_token_1_amount = current_strat_obs.liquidity_in_1
@@ -122,25 +153,29 @@ class ActivelyRebalancedStrategy:
                 limit_order_width = self.limit_order_width_large
             elif latestSig > 0 :
                 # we want to reduce token_0. so we make the token_0 limit order width small             
-                limit_order_width = self.limit_order_width_small
+                limit_order_width = self.limit_order_width
             else : # latestSig == 0
-                limit_order_width = self.limit_order_width_normal
-            order2_range_upper = (1 + limit_order_width) * current_strat_obs.price                                 
+                limit_order_width = self.limit_order_width
+            order2_range_upper = (1 + limit_order_width) * current_strat_obs.price    
+            TICK_A, TICK_B = self.get_TICK_AB_for_range(order2_range_lower, order2_range_upper, current_strat_obs)
+            while TICK_A <= current_strat_obs.price_tick :
+                TICK_A, TICK_B = TICK_A+1 , TICK_B+1
         else:
             # Place Token 1 limit order
             limit_amount_0 = 0.0            
             order2_range_upper = current_strat_obs.price 
             if latestSig < 0 :
                 # we want to reduce token_1. so we make the token_1 limit order width small             
-                limit_order_width = self.limit_order_width_small
+                limit_order_width = self.limit_order_width
             elif latestSig > 0 :
                 # we want to accumulate token_1. so we make the token_1 limit order width large             
                 limit_order_width = self.limit_order_width_large
             else : # latestSig == 0
-                limit_order_width = self.limit_order_width_normal
-            order2_range_lower = (1 - limit_order_width) * current_strat_obs.price            
-
-        TICK_A, TICK_B = self.get_TICK_AB_for_range(order2_range_lower, order2_range_upper, current_strat_obs)
+                limit_order_width = self.limit_order_width
+            order2_range_lower = 1 / (1 + limit_order_width) * current_strat_obs.price    
+            TICK_A, TICK_B = self.get_TICK_AB_for_range(order2_range_lower, order2_range_upper, current_strat_obs)
+            while TICK_B >= current_strat_obs.price_tick :
+                    TICK_A, TICK_B = TICK_A-1 , TICK_B-1
         
         liquidity_placed_order2        = int(UNI_v3_funcs.get_liquidity(current_strat_obs.price_tick,TICK_A,TICK_B, 
                                                     limit_amount_0, limit_amount_1, current_strat_obs.decimals_0,current_strat_obs.decimals_1))        
@@ -196,6 +231,7 @@ class ActivelyRebalancedStrategy:
             
             this_data['reset_range_lower']      = strategy_observation.strategy_info['reset_range_lower']
             this_data['reset_range_upper']      = strategy_observation.strategy_info['reset_range_upper']
+            this_data['latestSig']              = strategy_observation.strategy_info['latestSig']
             this_data['price_at_reset']         = strategy_observation.liquidity_ranges[0]['price']
             
             # Fee Varaibles
