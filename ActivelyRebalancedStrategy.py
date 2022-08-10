@@ -9,13 +9,14 @@ class ActivelyRebalancedStrategy:
     
     def __init__(self, 
                  base_order_width, 
+                 base_order_width_small, 
                  base_order_width_large, 
                  limit_order_width, 
                  limit_order_width_large, 
                  alpha, 
                  alpha_large):    
     
-        self.base_order_width, self.base_order_width_large = base_order_width, base_order_width_large
+        self.base_order_width, self.base_order_width_small, self.base_order_width_large = base_order_width, base_order_width_small, base_order_width_large
         self.limit_order_width, self.limit_order_width_large = limit_order_width, limit_order_width_large
         self.alpha, self.alpha_large = alpha, alpha_large     
         self.signals = pd.read_csv("signals.csv")
@@ -31,7 +32,6 @@ class ActivelyRebalancedStrategy:
         LEFT_RANGE_HIGH     = current_strat_obs.price > current_strat_obs.strategy_info['reset_range_upper']        
         SignalChanged = False
         if IsNewHour :            
-            #latestSig = self.signals.iloc[self.signals['date'].searchsorted(current_strat_obs.time)]['signal']
             try :
                 latestSig = self.signals.iloc[self.signals['date'].searchsorted(current_strat_obs.time)]['signal']
             except:
@@ -98,12 +98,12 @@ class ActivelyRebalancedStrategy:
                 
         if latestSig < 0 :
             # we want to accumulate token_0, and reduce token_1
-            order1_range_lower = 1 / (1 + self.base_order_width) * current_strat_obs.price
+            order1_range_lower = 1 / (1 + self.base_order_width_small) * current_strat_obs.price
             order1_range_upper = (1 + self.base_order_width_large) * current_strat_obs.price
         elif latestSig > 0 :
             # we want to reduce token_0, an accumulate token_1
             order1_range_lower = 1 / (1 + self.base_order_width_large) * current_strat_obs.price
-            order1_range_upper = (1 + self.base_order_width) * current_strat_obs.price
+            order1_range_upper = (1 + self.base_order_width_small) * current_strat_obs.price
         else : # latestSig == 0
             order1_range_lower = 1/ (1 + self.base_order_width) * current_strat_obs.price
             order1_range_upper = (1 + self.base_order_width) * current_strat_obs.price
