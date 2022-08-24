@@ -25,23 +25,31 @@ class ActivelyRebalancedStrategy:
         self.lastSignal = 0
                 
             
-    def check_strategy(self,current_strat_obs):
-
-        IsNewHour = (self.lastCheck is None) or (self.lastCheck.hour != current_strat_obs.time.hour)
-        LEFT_RANGE_LOW      = current_strat_obs.price < current_strat_obs.strategy_info['reset_range_lower']
-        LEFT_RANGE_HIGH     = current_strat_obs.price > current_strat_obs.strategy_info['reset_range_upper']        
-        SignalChanged = False
-        if IsNewHour :            
-            try :
-                latestSig = self.signals.iloc[self.signals['date'].searchsorted(current_strat_obs.time)]['signal']
-            except:
-                print("  signal not found for %s, default to sig=0"%current_strat_obs.time)
-                latestSig = 0
-            
+    def check_strategy(self,current_strat_obs):  
+        
+        if 'signals' in current_strat_obs.strategy_info.keys() : # for live    
+            # current_strat_obs.strategy_info['signals'] = pd.read_csv('http://algotradingstrategies.com/gamma/polygon_usdcweth_30bp.txt')
+            SignalChanged = False
+            latestSig = current_strat_obs.strategy_info['signals']['signal'].values[0]
             SignalChanged = self.lastSignal != latestSig
             self.lastSignal = latestSig
-            self.lastCheck = current_strat_obs.time            
+        else : # for backtest
+            IsNewHour = (self.lastCheck is None) or (self.lastCheck.hour != current_strat_obs.time.hour)
+            SignalChanged = False
+            if IsNewHour :            
+                try :
+                    latestSig = self.signals.iloc[self.signals['date'].searchsorted(current_strat_obs.time)]['signal']
+                except:
+                    print("  signal not found for %s, default to sig=0"%current_strat_obs.time)
+                    latestSig = 0
+
+                SignalChanged = self.lastSignal != latestSig
+                self.lastSignal = latestSig
+                self.lastCheck = current_strat_obs.time            
                     
+        LEFT_RANGE_LOW      = current_strat_obs.price < current_strat_obs.strategy_info['reset_range_lower']
+        LEFT_RANGE_HIGH     = current_strat_obs.price > current_strat_obs.strategy_info['reset_range_upper']        
+
         # if a reset is necessary
         if SignalChanged or LEFT_RANGE_LOW or LEFT_RANGE_HIGH:
             current_strat_obs.reset_point = True                                    
