@@ -23,7 +23,7 @@ class ActivelyRebalancedStrategy:
         self.signals['date'] = pd.to_datetime(self.signals['date'], utc=True) + pd.DateOffset(hours=1)
         self.lastCheck = None
         self.lastSignal = 0
-                
+        self.tokens_outside_reset = 0.05                
             
     def check_strategy(self,current_strat_obs):  
         
@@ -45,7 +45,13 @@ class ActivelyRebalancedStrategy:
 
                 SignalChanged = self.lastSignal != latestSig
                 self.lastSignal = latestSig
-                self.lastCheck = current_strat_obs.time            
+                self.lastCheck = current_strat_obs.time   
+                
+        # CHECK if unallocated tokens exceed threshold
+        left_over_balance = current_strat_obs.token_0_left_over * current_strat_obs.price + current_strat_obs.token_1_left_over   
+        LIMIT_ORDER_BALANCE = current_strat_obs.liquidity_ranges[1]['token_0'] * current_strat_obs.price + current_strat_obs.liquidity_ranges[1]['token_1']  
+        BASE_ORDER_BALANCE  = current_strat_obs.liquidity_ranges[0]['token_0'] * current_strat_obs.price + current_strat_obs.liquidity_ranges[0]['token_1'] 
+        TOKENS_OUTSIDE_LARGE = (left_over_balance > self.tokens_outside_reset * (LIMIT_ORDER_BALANCE + BASE_ORDER_BALANCE))      
                     
         LEFT_RANGE_LOW      = current_strat_obs.price < current_strat_obs.strategy_info['reset_range_lower']
         LEFT_RANGE_HIGH     = current_strat_obs.price > current_strat_obs.strategy_info['reset_range_upper']        
@@ -60,6 +66,15 @@ class ActivelyRebalancedStrategy:
             # set ranges
             liq_range,strategy_info = self.set_liquidity_ranges(current_strat_obs, self.lastSignal)
             return liq_range,strategy_info
+        elif TOKENS_OUTSIDE_LARGE :
+            #  rebalance
+            current_strat_obs.reset_point = True
+            current_strat_obs.reset_reason = 'tokens_outside_large'
+            # Remove liquidity and claim fees 
+            current_strat_obs.remove_liquidity()
+            # Reset liquidity            
+            liquidity_ranges,strategy_info = self.set_liquidity_ranges(current_strat_obs, self.lastSignal)
+            return liquidity_ranges,strategy_info
         else:
             return current_strat_obs.liquidity_ranges,current_strat_obs.strategy_info
     
@@ -69,7 +84,7 @@ class ActivelyRebalancedStrategy:
         TICK_A             = int(round(TICK_A_PRE/current_strat_obs.tickSpacing)*current_strat_obs.tickSpacing)
         TICK_B_PRE        = int(math.log(current_strat_obs.decimal_adjustment * order_range_upper,1.0001))
         TICK_B            = int(round(TICK_B_PRE/current_strat_obs.tickSpacing)*current_strat_obs.tickSpacing)
-        if TICK_A==TICK_B: TICK_B=TICK_A+1
+        if TICK_A==TICK_B: TICK_B=TICK_A+current_strat_obs.tickSpacing        
         return TICK_A, TICK_B
           
     def set_liquidity_ranges(self,current_strat_obs, latestSig = 0):
@@ -128,7 +143,7 @@ class ActivelyRebalancedStrategy:
                                                     current_strat_obs.decimals_0,current_strat_obs.decimals_1)                
             
         total_token_0_amount  -= order1_0_amount
-        total_token_1_amount  -= order1_1_amount
+        total_token_1_amount  -= order1_1_amount                
 
         order1_range =        {'price'              : current_strat_obs.price,
                                 'lower_bin_tick'     : TICK_A,
@@ -166,8 +181,8 @@ class ActivelyRebalancedStrategy:
                 limit_order_width = self.limit_order_width
             order2_range_upper = (1 + limit_order_width) * current_strat_obs.price    
             TICK_A, TICK_B = self.get_TICK_AB_for_range(order2_range_lower, order2_range_upper, current_strat_obs)
-            while TICK_A <= current_strat_obs.price_tick :
-                TICK_A, TICK_B = TICK_A+1 , TICK_B+1
+            while TICK_A < current_strat_obs.price_tick : # was: <=
+                TICK_A, TICK_B = TICK_A+current_strat_obs.tickSpacing , TICK_B+current_strat_obs.tickSpacing
         else:
             # Place Token 1 limit order
             limit_amount_0 = 0.0            
@@ -182,8 +197,8 @@ class ActivelyRebalancedStrategy:
                 limit_order_width = self.limit_order_width
             order2_range_lower = 1 / (1 + limit_order_width) * current_strat_obs.price    
             TICK_A, TICK_B = self.get_TICK_AB_for_range(order2_range_lower, order2_range_upper, current_strat_obs)
-            while TICK_B >= current_strat_obs.price_tick :
-                    TICK_A, TICK_B = TICK_A-1 , TICK_B-1
+            while TICK_B > current_strat_obs.price_tick :  # was: >=
+                    TICK_A, TICK_B = TICK_A-current_strat_obs.tickSpacing , TICK_B-current_strat_obs.tickSpacing  
         
         liquidity_placed_order2        = int(UNI_v3_funcs.get_liquidity(current_strat_obs.price_tick,TICK_A,TICK_B, 
                                                     limit_amount_0, limit_amount_1, current_strat_obs.decimals_0,current_strat_obs.decimals_1))        
